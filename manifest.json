@@ -1,0 +1,50 @@
+{
+  "manifest_version": 3,
+  "name": "Locale & WebRTC Consistency",
+  "version": "1.4.2",
+  "description": "Reports Buffalo/New York timezone, en-US locale, and prevents WebRTC/Canvas/Geo leaks under TUN/proxy.",
+  "permissions": [
+    "privacy",
+    "storage",
+    "tabs",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "minimum_chrome_version": "111",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Locale & WebRTC Consistency",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "match_origin_as_fallback": true
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["inject.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": true,
+      "match_origin_as_fallback": true
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
