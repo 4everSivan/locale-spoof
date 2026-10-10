@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Locale & WebRTC Consistency",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "description": "Reports Buffalo/New York timezone, en-US locale, and prevents WebRTC/Canvas/Geo leaks under TUN/proxy.",
   "permissions": [
     "privacy",

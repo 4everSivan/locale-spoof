@@ -133,29 +133,6 @@
     }
   }
 
-  // Hide toString from toString.call / toString.apply inspection
-  const origCall = Function.prototype.call;
-  Function.prototype.call = new Proxy(origCall, {
-    apply(target, thisArg, args) {
-      if (thisArg === Function.prototype.toString && args.length && nativeMap.has(args[0])) {
-        return nativeMap.get(args[0]);
-      }
-      return Reflect.apply(target, thisArg, args);
-    }
-  });
-  markNative(Function.prototype.call, 'call');
-
-  const origApply = Function.prototype.apply;
-  Function.prototype.apply = new Proxy(origApply, {
-    apply(target, thisArg, args) {
-      if (thisArg === Function.prototype.toString && args.length && nativeMap.has(args[0])) {
-        return nativeMap.get(args[0]);
-      }
-      return Reflect.apply(target, thisArg, args);
-    }
-  });
-  markNative(Function.prototype.apply, 'apply');
-
   // =========================================================================
   // ---- Timezone helpers (cached; original Intl captured before patching) ----
   // =========================================================================
@@ -291,7 +268,8 @@
   // =========================================================================
   const origGTO = Date.prototype.getTimezoneOffset;
   const patchedGTO = function getTimezoneOffset() {
-    if (!isProtectionActive()) return origGTO.call(this);
+    const origVal = origGTO.call(this); // natively throws "this is not a Date object." if invalid receiver
+    if (!isProtectionActive()) return origVal;
     const t = this.getTime();
     if (isNaN(t)) return NaN; // native returns NaN for Invalid Date
     const off = offsetMinutesEast(t, CONFIG.timezone);
@@ -309,7 +287,8 @@
   for (const [name, utcName] of DATE_GETTERS) {
     const orig = Date.prototype[name];
     const fn = function () {
-      if (!isProtectionActive()) return orig.call(this);
+      const origVal = orig.call(this); // validates receiver type natively
+      if (!isProtectionActive()) return origVal;
       return getTargetDate(this.getTime())[utcName]();
     };
     markNative(fn, name, { length: orig.length });
@@ -318,7 +297,8 @@
 
   const origGetYear = Date.prototype.getYear;
   const patchedGetYear = function getYear() {
-    if (!isProtectionActive()) return origGetYear.call(this);
+    const origVal = origGetYear.call(this);
+    if (!isProtectionActive()) return origVal;
     return this.getFullYear() - 1900;
   };
   markNative(patchedGetYear, 'getYear', { length: origGetYear.length });
@@ -329,9 +309,9 @@
 
   const origToDateString = Date.prototype.toDateString;
   const patchedToDateString = function toDateString() {
-    const t = this.getTime();
-    if (!isProtectionActive() || isNaN(t)) return origToDateString.call(this);
-    const d = getTargetDate(t);
+    const origVal = origToDateString.call(this);
+    if (!isProtectionActive() || isNaN(this.getTime())) return origVal;
+    const d = getTargetDate(this.getTime());
     return `${DAYS[d.getUTCDay()]} ${MO[d.getUTCMonth()]} ${String(d.getUTCDate()).padStart(2, '0')} ${d.getUTCFullYear()}`;
   };
   markNative(patchedToDateString, 'toDateString', { length: origToDateString.length });
@@ -339,8 +319,9 @@
 
   const origToTimeString = Date.prototype.toTimeString;
   const patchedToTimeString = function toTimeString() {
+    const origVal = origToTimeString.call(this);
+    if (!isProtectionActive() || isNaN(this.getTime())) return origVal;
     const t = this.getTime();
-    if (!isProtectionActive() || isNaN(t)) return origToTimeString.call(this);
     const d = getTargetDate(t);
     const hh = String(d.getUTCHours()).padStart(2, '0');
     const mm = String(d.getUTCMinutes()).padStart(2, '0');
@@ -352,16 +333,17 @@
 
   const origToStringDate = Date.prototype.toString;
   const patchedToString = function toString() {
-    const t = this.getTime();
-    if (!isProtectionActive() || isNaN(t)) return origToStringDate.call(this); // "Invalid Date"
+    const origVal = origToStringDate.call(this);
+    if (!isProtectionActive() || isNaN(this.getTime())) return origVal; // "Invalid Date"
     try {
+      const t = this.getTime();
       const d = getTargetDate(t);
       const hh = String(d.getUTCHours()).padStart(2, '0');
       const mm = String(d.getUTCMinutes()).padStart(2, '0');
       const ss = String(d.getUTCSeconds()).padStart(2, '0');
       return `${DAYS[d.getUTCDay()]} ${MO[d.getUTCMonth()]} ${String(d.getUTCDate()).padStart(2, '0')} ${d.getUTCFullYear()} ${hh}:${mm}:${ss} GMT${gmtOffset(t, CONFIG.timezone)} (${tzName(t, CONFIG.timezone)})`;
     } catch (e) {
-      return origToStringDate.call(this);
+      return origVal;
     }
   };
   markNative(patchedToString, 'toString', { length: origToStringDate.length });
@@ -373,12 +355,13 @@
   function patchDateMethod(name, defaultOpts) {
     const origFn = Date.prototype[name];
     const fn = function (l, o) {
-      if (!isProtectionActive()) return origFn.call(this, l, o);
+      const origVal = origFn.call(this, l, o);
+      if (!isProtectionActive()) return origVal;
       try {
         const locale = l === undefined ? CONFIG.locale : l;
         return new OrigDateTimeFormat(locale, Object.assign({ timeZone: CONFIG.timezone }, defaultOpts, o)).format(this);
       } catch (e) {
-        return origFn.call(this, l, o); // Invalid Date -> "Invalid Date" via native
+        return origVal; // Invalid Date -> "Invalid Date" via native
       }
     };
     markNative(fn, name, { length: origFn.length });
@@ -894,6 +877,55 @@
       markNative(GL.prototype.readPixels, 'readPixels', { length: origReadPixels.length });
     }
   })();
+
+  // =========================================================================
+  // ---- Safe Same-Origin about:blank Iframe Synchronization ----
+  // Defends against Cloudflare/Kasada creating a temporary hidden iframe
+  // and reading its unhooked Date/Intl prototypes to detect tampering.
+  // Strictly isolates cross-origin and sandboxed iframes to prevent SecurityErrors.
+  // =========================================================================
+  if (typeof HTMLIFrameElement !== 'undefined') {
+    const origContentWindowDesc = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentWindow');
+    if (origContentWindowDesc && origContentWindowDesc.get) {
+      const origGet = origContentWindowDesc.get;
+      const patchedGet = function contentWindow() {
+        const win = origGet.call(this);
+        if (!win || !isProtectionActive()) return win;
+        try {
+          // If sandboxed without allow-scripts permission, skip
+          if (this.sandbox && this.sandbox.length > 0 && !this.sandbox.contains('allow-scripts')) {
+            return win;
+          }
+          // Only sync same-origin about:blank or empty iframes
+          if (win.location && (win.location.href === 'about:blank' || win.location.href === '')) {
+            if (!win[FLAG]) {
+              try {
+                win.Date = window.Date;
+                win.Intl = window.Intl;
+                if (win.navigator) {
+                  try {
+                    Object.defineProperty(win.navigator, 'language', { get: () => CONFIG.locale, configurable: true });
+                    Object.defineProperty(win.navigator, 'languages', { get: () => languagesCache, configurable: true });
+                  } catch (e) {}
+                }
+                win[FLAG] = 1;
+              } catch (e) {}
+            }
+          }
+        } catch (e) {
+          // In cross-origin iframes, accessing win.location throws a SecurityError.
+          // Caught safely here to return original win without leaking any exception.
+        }
+        return win;
+      };
+      markNative(patchedGet, 'contentWindow', { getter: true });
+      Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
+        get: patchedGet,
+        configurable: true,
+        enumerable: true
+      });
+    }
+  }
 
   // =========================================================================
   // ---- Authenticated config updates ----
